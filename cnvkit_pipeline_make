@@ -1,0 +1,139 @@
+#infile=$infile indir=$indir pre=$pre metrics=$metrics unalign_bam=$unalign_bam unalign_mark=$unalign_mark
+#ubam2fq=$ubam2fq sam=$sam mergebam=$mergebam dupbam=$dupbam dupsortbam=$dupsortbam
+picard=java -Xmx32G -jar /SSD750/PB1/soft1/picard.jar
+hg19=/home/test01/software/cnvkit/hg19.fa
+hg19_2=/SSD750/PB3/db3/Homo/bwa_index/hg19.fa
+bed=/home/test01/software/cnvkit/wes.bed
+refFlat=/home/test01/software/cnvkit/refFlat.txt
+###targets###
+HELP:
+	@echo Description:
+	@echo cnvkit: target - access - antitarget - coverage - reference - fix - segment - scatter - diagram
+	@echo Usage:
+	@echo make -f this_makefile infile= indir= ...
+
+#all: Fq2uBAM MarkAdapter Ubam2Fq BWAMEM MergeBamAlignment MarkDup SortBam Target Access AntiTarget CoverTarget CoverAntitarget Reference Fix Segment Scatter Diagram
+
+all: $(indir)/Sample-scatter.pdf $(indir)/Sample-diagram.pdf
+
+#Fq2uBAM 
+$(unalign_bam): $(infile)
+	@echo " "
+	@echo "################## Fq2uBAM Begin:" `date`
+	$(picard) FastqToSam F1=$(infile) RG=W01 SM=W01 LB=W01 PL=ILLUMINA  O=$(unalign_bam)
+	@echo "################## Fq2uBAM End:" `date`
+
+#MarkAdapter 
+$(unalign_mark): $(unalign_bam)
+	@echo " "
+	@echo "################## MarkAdapter Begin:" `date`
+	$(picard) MarkIlluminaAdapters I=$(unalign_bam) O=$(unalign_mark) M=$(metrics)
+	@echo "################## MarkAdapter End:" `date`
+
+#Ubam2Fq
+$(ubam2fq): $(unalign_mark)
+	@echo " "
+	@echo "################## Ubam2Fq Begin:" `date`
+	$(picard) SamToFastq I=$(unalign_mark) F=$(ubam2fq) CLIPPING_ATTRIBUTE=XT CLIPPING_ACTION=2 INTERLEAVE=true  NON_PF=true
+	@echo "################## Ubam2Fq End:" `date`
+
+#BWAMEM
+$(sam): $(ubam2fq)
+	@echo " "
+	@echo "################## BWAMEM Begin:" `date`
+	bwa mem -M -t 8 -p $(hg19_2) $(ubam2fq) > $(sam)
+	@echo "################## BWAMEM End:" `date`
+
+#MergeBamAlignment
+$(mergebam): $(sam)
+	@echo " "
+	@echo "################## MergeBamAlignment Begin:" `date`
+	$(picard) MergeBamAlignment R=$(hg19) UNMAPPED_BAM=$(unalign_bam) ALIGNED_BAM=$(sam) O=$(mergebam) CREATE_INDEX=true ADD_MATE_CIGAR=true \
+	CLIP_ADAPTERS=false CLIP_OVERLAPPING_READS=true INCLUDE_SECONDARY_ALIGNMENTS=true MAX_INSERTIONS_OR_DELETIONS=-1 \
+	PRIMARY_ALIGNMENT_STRATEGY=MostDistant ATTRIBUTES_TO_RETAIN=XS
+	@echo "################## MergeBamAlignment End:" `date`
+
+#MarkDup
+$(dupbam): $(mergebam)
+	@echo " "
+	@echo "################## MarkDup Begin:" `date`
+	$(picard) MarkDuplicates INPUT=$(mergebam) OUTPUT=$(dupbam) METRICS_FILE=metrics.txt VALIDATION_STRINGENCY=SILENT
+	@echo "################## MarkDup End:" `date`
+
+#SortBam
+$(dupsortbam): $(dupbam)
+	@echo " "
+	@echo "################## SortBam Begin:" `date`
+	$(picard) SortSam INPUT=$(dupbam) OUTPUT=$(dupsortbam) SORT_ORDER=coordinate CREATE_INDEX=true REFERENCE_SEQUENCE=$(hg19) TMP_DIR=$(indir)/tmp
+	@echo "################## SortBam End:" `date`
+
+#Target
+$(indir)/my_targets.bed: $(bed) $(refFlat)
+	@echo " "
+	@echo "################## Target Begin:" `date`
+	cnvkit.py target $(bed) --annotate $(refFlat) -o $(indir)/my_targets.bed
+	@echo "################## Target End:" `date`
+
+#Access
+$(indir)/access-hg19.bed:
+	@echo " "
+	@echo "################## Access Begin:" `date`
+	cnvkit.py access $(hg19) -o $(indir)/access-hg19.bed
+	@echo "################## Access End:" `date`
+
+#AntiTarget
+$(indir)/my_antitargets.bed: $(indir)/my_targets.bed $(indir)/access-hg19.bed
+	@echo " "
+	@echo "################## AntiTarget Begin:" `date`
+	cnvkit.py antitarget $(indir)/my_targets.bed --access $(indir)/access-hg19.bed -o $(indir)/my_antitargets.bed
+	@echo "################## AntiTarget End:" `date`
+
+#CoverTarget
+$(indir)/Sample.targetcoverage.cnn: $(dupsortbam) $(indir)/my_targets.bed
+	@echo " "
+	@echo "################## CoverTarget Begin:" `date`
+	cnvkit.py coverage $(dupsortbam) $(indir)/my_targets.bed -o $(indir)/Sample.targetcoverage.cnn
+	@echo "################## CoverTarget End:" `date`
+
+#CoverAntitarget
+$(indir)/Sample.antitargetcoverage.cnn: $(dupsortbam) $(indir)/my_antitargets.bed
+	@echo " "
+	@echo "################## CoverAntitarget Begin:" `date`
+	cnvkit.py coverage $(dupsortbam) $(indir)/my_antitargets.bed -o $(indir)/Sample.antitargetcoverage.cnn
+	@echo "################## CoverAntitarget End:" `date`
+
+#Reference
+$(indir)/FlatReference.cnn:
+	@echo " "
+	@echo "################## Reference Begin:" `date`
+	cnvkit.py reference -o $(indir)/FlatReference.cnn -f $(hg19) -t $(indir)/my_targets.bed -a $(indir)/my_antitargets.bed
+	@echo "################## Reference End:" `date`
+
+#Fix
+$(indir)/Sample.cnr: $(indir)/Sample.targetcoverage.cnn $(indir)/Sample.antitargetcoverage.cnn $(indir)/FlatReference.cnn
+	@echo " "
+	@echo "################## Fix Begin:" `date`
+	cnvkit.py fix $(indir)/Sample.targetcoverage.cnn $(indir)/Sample.antitargetcoverage.cnn $(indir)/FlatReference.cnn -o $(indir)/Sample.cnr
+	@echo "################## Fix End:" `date`
+
+#Segment
+$(indir)/Sample.cns: $(indir)/Sample.cnr
+	@echo " "
+	@echo "################## Segment Begin:" `date`
+	cnvkit.py segment $(indir)/Sample.cnr -o $(indir)/Sample.cns
+	@echo "################## Segment End:" `date`
+
+#Scatter
+$(indir)/Sample-scatter.pdf: $(indir)/Sample.cnr $(indir)/Sample.cns
+	@echo " "
+	@echo "################## Scatter Begin:" `date`
+	cnvkit.py scatter $(indir)/Sample.cnr -s $(indir)/Sample.cns -o $(indir)/Sample-scatter.pdf
+	@echo "################## Scatter End:" `date`
+
+#Diagram
+$(indir)/Sample-diagram.pdf: $(indir)/Sample.cnr $(indir)/Sample.cns
+	@echo " "
+	@echo "################## Diagram Begin:" `date`
+	cnvkit.py diagram $(indir)/Sample.cnr -s $(indir)/Sample.cns  -o $(indir)/Sample-diagram.pdf
+	@echo "################## Diagram End:" `date`
+
